@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""snowq — klient do daemona snowqd. Wysyła SQL przez unix-socket i drukuje wynik.
+Stdlib only (bez venv). Socket szukany obok tego pliku. Użycie:
+  snowq "SELECT 1"
+  snowq --csv "SELECT ..."            # CSV zamiast JSON
+  snowq -o out.json "SELECT ..."      # zapis do pliku
+  echo "SELECT ..." | snowq           # SQL ze stdin
+"""
+import csv
+import io
+import json
+import os
+import socket
+import sys
+
+SOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snowqd.sock")
+
+
+def render(cols, rows, fmt):
+    if fmt == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        w.writerows(rows)
+        return buf.getvalue().rstrip("\n")
+    if fmt == "table":
+        widths = [len(c) for c in cols]
+        for r in rows:
+            for i, v in enumerate(r):
+                widths[i] = max(widths[i], len(str(v)))
+        line = lambda vals: " | ".join(str(v).ljust(widths[i]) for i, v in enumerate(vals))
+        out = [line(cols), "-+-".join("-" * w for w in widths)]
+        out += [line(r) for r in rows]
+        return "\n".join(out)
+    return json.dumps([dict(zip(cols, r)) for r in rows], indent=2, ensure_ascii=False)
+
+
+def main():
+    fmt, out, sql_parts = "json", None, []
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--csv":
+            fmt = "csv"
+        elif a == "--table":
+            fmt = "table"
+        elif a == "--json":
+            fmt = "json"
+        elif a == "-o":
+            out = args[i + 1]
+            i += 1
+        else:
+            sql_parts.append(a)
+        i += 1
+    sql = " ".join(sql_parts).strip() or sys.stdin.read().strip()
+    if not sql:
+        sys.exit("snowq: brak SQL")
+    if not os.path.exists(SOCK):
+        sys.exit("snowq: daemon nie działa — uruchom: ~/Projects/personal/snowq/start.sh")
+
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(SOCK)
+    s.sendall(json.dumps({"sql": sql}).encode())
+    s.shutdown(socket.SHUT_WR)
+    buf = b""
+    while True:
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    res = json.loads(buf.decode())
+    if not res.get("ok"):
+        sys.exit(f"snowq error: {res.get('error')}")
+    text = render(res["columns"], res["rows"], fmt)
+    if out:
+        with open(out, "w") as f:
+            f.write(text + "\n")
+        sys.stderr.write(f"snowq: {len(res['rows'])} wierszy → {out}\n")
+    else:
+        print(text)
+
+
+if __name__ == "__main__":
+    main()
