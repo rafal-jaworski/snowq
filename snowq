@@ -13,7 +13,7 @@ import os
 import socket
 import sys
 
-SOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snowqd.sock")
+SOCK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "snowqd.sock")
 
 
 def render(cols, rows, fmt):
